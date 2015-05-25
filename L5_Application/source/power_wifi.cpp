@@ -56,7 +56,7 @@
 #define WIFI_STATUS_IDX_ADCL    3
 #define WIFI_STATUS_IDX_MPOS    4
 #define ADC_PORT                3
-#define ADC_AVERAGE_DEPTH       1000
+#define ADC_AVERAGE_DEPTH       2000
 
 /**
  * Motion Control Package Structure
@@ -241,10 +241,11 @@ static void mid_comm_task(void *p)
 #define ENABLE_PIN    (1 << 0)
 #define STEP_PIN      (1 << 3)
 
-#define SPEED_MS  5  // 5ms per toggle, 2 toggles per step, 200 steps/rev,  100 steps/s, 0.5 rev/s, 180 deg/s
+#define SPEED_MS  10  // 5ms per toggle, 2 toggles per step, 200 steps/rev,  100 steps/s, 0.5 rev/s, 180 deg/s
 #define STEPS_FULL_REV 400
-#define ADC_SAMPLE_PERIOD (STEPS_FULL_REV / 10)
-#define ENERGY_SAMPLES (STEPS_FULL_REV/2) // each 2 STEPS_FULL_REV = 1 step
+#define ENERGY_SAMPLES 10 // each 2 STEPS_FULL_REV = 1 step
+#define ADC_SAMPLE_PERIOD (STEPS_FULL_REV / ENERGY_SAMPLES)
+
 #define STEPS_PER_REV 200
 #define DRIVE_ON false
 #define DRIVE_OFF true
@@ -266,7 +267,7 @@ static uint16_t current_pos = 0;
 static int16_t steps_todo = 0;
 static int8_t steps_todo2 = 0;
 static uint16_t current_speed = SPEED_MS;
-static double energyArray[ENERGY_SAMPLES];
+static double energyArray[ENERGY_SAMPLES*2];
 static commandType commandSequence[10];
 static uint8_t energyArray_idx = 0;
 static uint8_t busy_bit = 0;
@@ -285,15 +286,9 @@ static void enableDrive(bool state)
 static void toggleStep(void)
 {
     if ((bool) (LPC_GPIO2->FIOPIN & STEP_PIN)) {
-        //pr_debug("toggling clr\n");
         LPC_GPIO2->FIOCLR = STEP_PIN;
     } else {
-        //pr_debug("toggling set\n");
         LPC_GPIO2->FIOSET = STEP_PIN;
-        //if (LPC_GPIO2->FIOPIN & STEP_PIN)
-        //    printf("set\n");
-        //else
-        //    printf("cleared\n");
         if ( LPC_GPIO2->FIOSET & DIRECTION_PIN) {
             current_pos = (current_pos + 1) % STEPS_PER_REV;
         } else {
@@ -315,8 +310,8 @@ static uint8_t get_max_energy_pos(void)
             max_sample_idx = cur_sample_idx;
         cur_sample_idx++;
     }
-    pr_debug("max energy pos = %d \n", max_sample_idx);
-    return max_sample_idx;
+    pr_debug("max energy pos = %d \n", max_sample_idx * (ADC_SAMPLE_PERIOD / 2));
+    return max_sample_idx * (ADC_SAMPLE_PERIOD / 2);
 }
 
 static void setDirection(bool direction)
@@ -339,7 +334,7 @@ static void setStep(bool state)
 
 static void motion_task(void *p)
 {
-    uint8_t adc_sample_flag;
+    int adc_sample_flag;
     uint32_t rx;
     int adc_sampe_ctr = 0;
 
@@ -358,17 +353,20 @@ static void motion_task(void *p)
                 steps_todo = STEPS_FULL_REV;
                 energyArray_idx = 0;
                 enableDrive(DRIVE_ON);
-                setDirection(CCW);
+                setDirection(CW);
                 while (steps_todo > 0) {
                     if (adc_sample_flag % ADC_SAMPLE_PERIOD == 0) {
+                        vTaskDelay(1000);
                         unsigned int adc = 0, i;
                         for (i = 0; i < ADC_AVERAGE_DEPTH; i++)
                             adc += adc0_get_reading(ADC_PORT);
                         energyArray[energyArray_idx++] = adc / ADC_AVERAGE_DEPTH;
-                        pr_debug("ADC sample %d: %d\n", adc_sampe_ctr, energyArray_idx);
+                        pr_debug("ADC sample %d: %d, position=%u\n",
+                                  adc_sampe_ctr, adc / ADC_AVERAGE_DEPTH, current_pos);
+                        adc_sampe_ctr++;
                     }
                     adc_sample_flag++;
-                    adc_sampe_ctr++;
+
                     toggleStep();
                     steps_todo--;
                     vTaskDelay(current_speed);
@@ -377,7 +375,7 @@ static void motion_task(void *p)
                 steps_todo = get_max_energy_pos() - current_pos;
                 pr_debug("currentPos = %d, steps_todo = %d\n", current_pos, steps_todo);
 
-                vTaskDelay(10000);
+                vTaskDelay(1000);
                 setDirection(steps_todo > 0 ? CW : CCW);
                 while (steps_todo > 0) {
                     toggleStep();
